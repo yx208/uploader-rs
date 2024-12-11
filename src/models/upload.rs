@@ -131,7 +131,7 @@ impl UploadProgress {
 }
 
 /// Represents a file upload
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Upload {
     /// Unique identifier for the upload
     pub id: String,

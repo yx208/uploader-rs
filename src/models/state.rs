@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use crate::config::TusConfig;
 use crate::error::{TusError, TusResult};
-use crate::models::upload::Upload;
+use crate::models::upload::{Upload, UploadState};
 
 /// 表示系统中所有上传的完整状态
 #[derive(Debug, Serialize, Deserialize)]
@@ -68,10 +68,56 @@ impl UploadManager {
         Ok(())
     }
 
+    pub async fn get_upload(&self, id: &str) -> TusResult<Upload> {
+        let state = self.state.read().await;
+        state.uploads.get(id)
+            .cloned()
+            .ok_or_else(|| TusError::UploadNotFound(id.to_string()))
+    }
 
+    pub async fn remove_upload(&self, id: &str) -> TusResult<()> {
+        let mut state = self.state.write().await;
+        if state.uploads.remove(id).is_none() {
+            return Err(TusError::UploadNotFound(id.to_string()));
+        }
+        self.persist_state(&state).await?;
 
+        Ok(())
+    }
 
+    pub async fn update_upload(&self, upload: Upload) -> TusResult<()> {
+        let mut state = self.state.write().await;
+        if !state.uploads.contains_key(&upload.id) {
+            return Err(TusError::UploadNotFound(upload.id));
+        }
+        state.uploads.insert(upload.id.clone(), upload);
+        self.persist_state(&state).await?;
 
+        Ok(())
+    }
+
+    pub async fn get_uploads_by_state(&self, state: UploadState) -> Vec<Upload> {
+        let state_snapshot = self.state.read().await;
+        state_snapshot.uploads.values()
+            .filter(|upload| upload.state == state)
+            .cloned()
+            .collect()
+    }
+
+    pub async fn get_resumable_uploads(&self) -> Vec<Upload> {
+        let state_snapshot = self.state.read().await;
+        state_snapshot.uploads.values()
+            .filter(|upload| upload.can_start())
+            .cloned()
+            .collect()
+    }
+
+    pub async fn active_upload_count(&self) -> usize {
+        let state_snapshot = self.state.read().await;
+        state_snapshot.uploads.values()
+            .filter(|upload| upload.is_active())
+            .count()
+    }
 
     /// 将当前状态保存到磁盘
     async fn persist_state(&self, state: &UploadStateSnapshot) -> TusResult<()> {
@@ -83,5 +129,114 @@ impl UploadManager {
 
         Ok(())
     }
+
+    /// 开放 api
+    pub async fn save_state(&self) -> TusResult<()> {
+        let state = self.state.read().await;
+        self.persist_state(&state).await
+    }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    async fn create_test_manager() -> TusResult<UploadManager> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = TusConfig::new("https://example.com")
+            .with_state_dir(temp_dir.path().to_owned());
+        UploadManager::new(config).await
+    }
+
+    #[tokio::test]
+    async fn test_upload_lifecycle_management() -> TusResult<()> {
+        let manager = create_test_manager().await?;
+
+        // Create a test upload
+        let temp_file = tempfile::NamedTempFile::new()?;
+        let upload = Upload::new(temp_file.path().to_owned(), 1024)?;
+        let upload_id = upload.id.clone();
+
+        // Test adding upload
+        manager.add_upload(upload.clone()).await?;
+
+        // Test retrieving upload
+        let retrieved = manager.get_upload(&upload_id).await?;
+        assert_eq!(retrieved.id, upload_id);
+
+        // Test updating upload
+        let mut updated = retrieved;
+        updated.transition_to(UploadState::Active)?;
+        manager.update_upload(updated.clone()).await?;
+
+        let retrieved = manager.get_upload(&upload_id).await?;
+        assert_eq!(retrieved.state, UploadState::Active);
+
+        // Test removing upload
+        manager.remove_upload(&upload_id).await?;
+        assert!(manager.get_upload(&upload_id).await.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_state_persistence() -> TusResult<()> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = TusConfig::new("https://example.com")
+            .with_state_dir(temp_dir.path().to_owned());
+
+        // Create manager and add upload
+        let manager = UploadManager::new(config.clone()).await?;
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let upload = Upload::new(temp_file.path().to_owned(), 1024)?;
+        let upload_id = upload.id.clone();
+
+        manager.add_upload(upload).await?;
+
+        // Create new manager instance (simulating program restart)
+        let new_manager = UploadManager::new(config).await?;
+
+        // Verify upload state was restored
+        let retrieved = new_manager.get_upload(&upload_id).await?;
+        assert_eq!(retrieved.id, upload_id);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_access() -> TusResult<()> {
+        let manager = create_test_manager().await?;
+        let manager_clone = manager.clone();
+
+        // Create test upload
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let upload = Upload::new(temp_file.path().to_owned(), 1024)?;
+        let upload_id = upload.id.clone();
+
+        manager.add_upload(upload).await?;
+
+        // Spawn task to update upload
+        let inner_upload_id = upload_id.clone();
+        let update_task = tokio::spawn(async move {
+            let mut upload = manager_clone.get_upload(&inner_upload_id).await?;
+            upload.transition_to(UploadState::Active)?;
+            manager_clone.update_upload(upload).await
+        });
+
+        // Try to read while update is in progress
+        sleep(Duration::from_millis(10)).await;
+        let retrieved = manager.get_upload(&upload_id).await?;
+
+        // Wait for update to complete
+        update_task.await.unwrap()?;
+
+        // Verify states
+        assert!(retrieved.state == UploadState::Pending || retrieved.state == UploadState::Active);
+        let final_state = manager.get_upload(&upload_id).await?.state;
+        assert_eq!(final_state, UploadState::Active);
+
+        Ok(())
+    }
+}
