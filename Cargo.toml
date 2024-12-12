@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.94"
+base64 = "0.22.1"
+base64ct = "1.6.0"
 chrono = { version = "0.4.39", features = ["serde"] }
 dirs = "5.0.1"
 reqwest = "0.12.9"
@@ -14,3 +16,4 @@ tempfile = "3.14.0"
 thiserror = "2.0.6"
 tokio = { version = "1.42.0", features = ["full"] }
 uuid = { version = "1.11.0", features = ["v4", "serde"] }
+wiremock = "0.6.2"
