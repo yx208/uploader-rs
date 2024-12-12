@@ -123,8 +123,8 @@ impl UploadManager {
     async fn persist_state(&self, state: &UploadStateSnapshot) -> TusResult<()> {
         let content = serde_json::to_string_pretty(state)?;
         let temp_file = self.state_file.with_extension("tmp");
+        tokio::fs::create_dir_all(temp_file.parent().unwrap()).await?;
         tokio::fs::write(&temp_file, content).await?;
-
         tokio::fs::rename(&temp_file, &self.state_file).await?;
 
         Ok(())
