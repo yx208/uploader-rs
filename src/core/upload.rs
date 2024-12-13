@@ -98,7 +98,7 @@ impl Upload {
             chunk_size,
             location: None,
             total_bytes: metadata.len(),
-            status: UploadStatus::Padding,
+            status: UploadStatus::Pending,
             progress: UploadProgress::new(metadata.len()),
             created_at: Utc::now(),
             update_at: Utc::now(),
@@ -106,20 +106,41 @@ impl Upload {
         })
     }
 
-    pub fn set_location(&mut self, location: String) {
-        self.location = Some(location);
+    pub fn transition_to(&mut self, status: UploadStatus) -> UploadResult<()> {
+        if !self.status.can_transition_to(status) {
+            return Err(UploadError::InvalidState(
+                format!("Cannot transition from {:?} to {:?}", self.status, status)
+            ));
+        }
+
+        self.status = status;
+        self.update_at = Utc::now();
+
+        Ok(())
+    }
+
+    pub fn set_location(&mut self, location: impl Into<String>) {
+        self.location = Some(location.into());
         self.update_at = Utc::now();
     }
 
     pub fn is_active(&self) -> bool {
         matches!(self.status, UploadStatus::Active)
     }
+
+    pub fn can_start(&self) -> bool {
+        matches!(self.status, UploadStatus::Pending | UploadStatus::Paused)
+    }
+
+    pub fn is_finished(&self) -> bool {
+        matches!(self.status, UploadStatus::Completed | UploadStatus::Failed)
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 pub enum UploadStatus {
     /// 已创建，但尚未开始
-    Padding,
+    Pending,
 
     /// 正在传输
     Active,
@@ -134,9 +155,47 @@ pub enum UploadStatus {
     Failed,
 }
 
+impl UploadStatus {
+    pub fn can_transition_to(&self, target: UploadStatus) -> bool {
+        use UploadStatus::*;
+        match (*self, target) {
+            (Pending, Active) => true,
+
+            (Active, Paused) => true,
+            (Active, Completed) => true,
+            (Active, Failed) => true,
+
+            (Paused, Pending) => true,
+            (Paused, Active) => true,
+
+            (Failed, Pending) => true,
+            (Failed, Active) => true,
+
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_state_transitions() {
+        let transitions = [
+            (UploadStatus::Pending, UploadStatus::Active, true),
+            (UploadStatus::Active, UploadStatus::Paused, true),
+            (UploadStatus::Paused, UploadStatus::Active, true),
+            (UploadStatus::Active, UploadStatus::Completed, true),
+            (UploadStatus::Completed, UploadStatus::Active, false),
+            (UploadStatus::Failed, UploadStatus::Completed, false),
+        ];
+
+        for (from, to, expected) in transitions {
+            assert_eq!(from.can_transition_to(to), expected,
+                       "Unexpected result for transition {:?} -> {:?}", from, to);
+        }
+    }
 
     #[test]
     fn test_progress_update() {

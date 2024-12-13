@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
-use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use crate::core::error::{UploadError, UploadResult};
 
