@@ -10,6 +10,9 @@ pub enum UploadError {
 
     #[error("Failed to serialize/deserialize: {0}")]
     SerdeError(#[from] serde_json::Error),
+
+    #[error("Upload not found: {0}")]
+    UploadNotFound(String)
 }
 
 pub type UploadResult<T> = Result<T, UploadError>;

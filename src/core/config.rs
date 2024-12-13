@@ -33,7 +33,7 @@ pub struct TusConfig {
 }
 
 fn default_state_dir() -> PathBuf {
-    dirs::download_dir().unwrap_or_else(|| PathBuf::from("."))
+    dirs::document_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
 impl Default for TusConfig {
