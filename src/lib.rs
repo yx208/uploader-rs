@@ -1,3 +1,4 @@
 #![allow(warnings, warnings)]
 
-mod md5;
+mod core;
+mod uploader;
