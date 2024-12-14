@@ -129,10 +129,12 @@ mod tests {
     #[tokio::test]
     async fn test_queue() {
         let config = TusConfig::default();
+
         let manager = UploadStateManager::new(config).await.unwrap();
         let manager = Arc::new(manager);
 
-        let file_path = PathBuf::from("C:/Users/User/Videos/1086599689-1-209.mp4");
+        let mut file_path = dirs::video_dir().unwrap();
+        file_path.push("1086599689-1-209.mp4");
         let upload = Upload::new(file_path, 1024 * 1024 * 5).unwrap();
         let upload_id = upload.id.clone();
 
