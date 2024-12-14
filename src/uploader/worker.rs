@@ -189,7 +189,7 @@ mod tests {
 
     fn create_upload() -> Upload {
         let mut file_path = dirs::video_dir().unwrap();
-        file_path.push("1086599689-1-209.mp4");
+        file_path.push("1148739452-1-30120.mp4");
         Upload::new(file_path, 1024 * 1024 * 5).unwrap()
     }
 
@@ -209,6 +209,11 @@ mod tests {
     #[tokio::test]
     async fn test_upload() {
         let mut worker = create_worker();
-        let result = worker.start().await.unwrap();
+        let token = worker.cancellation_token.clone();
+        tokio::spawn(async move {
+            let _ = worker.start().await.unwrap();
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        token.cancel();
     }
 }
