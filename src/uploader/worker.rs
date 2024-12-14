@@ -1,8 +1,9 @@
 use reqwest::{Client, Request, Url};
+use reqwest::header::{HeaderName, HeaderValue};
 use tokio_util::sync::CancellationToken;
-use wiremock::http::{HeaderName, HeaderValue};
 use crate::core::config::TusConfig;
 use crate::core::error::{UploadError, UploadResult};
+use crate::core::headers;
 use crate::core::upload::{Upload, UploadStatus};
 
 pub struct UploadWorker {
@@ -77,13 +78,36 @@ impl UploadWorker {
         // 得到资源
         let location = response
             .headers()
-            .get("Location")
+            .get(reqwest::header::LOCATION)
             .and_then(|l| l.to_str().ok())
             .ok_or_else(|| UploadError::ConfigError("No location header in response".to_owned()))?;
 
         self.upload.set_location(location);
 
         Ok(())
+    }
+
+    /// 获取文件再服务端的偏移
+    /// 参考 Tus 协议文档：https://tus.io/protocols/resumable-upload#example
+    async fn get_upload_offset(&mut self) ->UploadResult<u64> {
+        let response = self.client
+            .head(&self.upload.location)
+            .header(headers::TUS_RESUMABLE, headers::TUS_VERSION)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(UploadError::ConfigError(format!("Failed to get offset: {}", response.status())));
+        }
+
+        let offset = response
+            .headers()
+            .get(headers::UPLOAD_OFFSET)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .ok_or_else(|| UploadError::ConfigError("Invalid offset in response".to_owned()))?;
+
+        Ok(offset)
     }
 }
 

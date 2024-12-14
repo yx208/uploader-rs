@@ -13,7 +13,7 @@ pub struct TusConfig {
     pub headers: HashMap<String, String>,
 
     /// 最大同时上传任务
-    pub max_concurrent: u8,
+    pub max_concurrent: usize,
 
     /// 每次上传块大小
     pub chunk_size: usize,
