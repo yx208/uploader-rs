@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use reqwest::{Client, Request, Url};
 use reqwest::header::{HeaderName, HeaderValue};
 use tokio_util::sync::CancellationToken;
@@ -56,8 +57,14 @@ impl UploadWorker {
             headers.insert(k.parse::<HeaderName>()?, v.parse::<HeaderValue>()?);
         }
 
-        headers.insert(HeaderName::from_bytes(b"Tus-Resumable")?, HeaderValue::from_bytes(b"1.0.0")?);
-        headers.insert(HeaderName::from_bytes(b"Upload-Length")?, HeaderValue::from(self.upload.total_bytes));
+        headers.insert(
+            HeaderName::from_str(headers::TUS_RESUMABLE)?,
+            HeaderValue::from_str(headers::TUS_VERSION)?
+        );
+        headers.insert(
+            HeaderName::from_str(headers::UPLOAD_LENGTH)?,
+            HeaderValue::from(self.upload.total_bytes)
+        );
 
         Ok(request)
     }
