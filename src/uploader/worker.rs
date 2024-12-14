@@ -40,7 +40,11 @@ impl UploadWorker {
             self.create_upload_in_server().await?;
         }
 
-        self.start_upload_chunks().await?;
+        let token = self.cancellation_token.clone();
+        select! {
+            _ = token.cancelled() => {},
+            _ = self.start_upload_chunks() => {}
+        }
 
         Ok(())
     }
@@ -53,47 +57,36 @@ impl UploadWorker {
         let mut buffer = vec![0u8; self.config.chunk_size];
 
         let max_retries = self.config.max_retries;
-        let future = async move {
-            let mut retry_count = 0;
+        let mut retry_count = 0;
 
-            loop {
-                let offset = self.get_upload_offset().await?;
-                if offset >= self.upload.total_bytes {
-                    self.upload.transition_to(UploadStatus::Completed)?;
-                    return Ok(());
+        loop {
+            let offset = self.get_upload_offset().await?;
+            if offset >= self.upload.total_bytes {
+                self.upload.transition_to(UploadStatus::Completed)?;
+                return Ok(());
+            }
+
+            reader.seek(SeekFrom::Start(offset)).await?;
+            let read_length = reader.read(&mut buffer).await?;
+            if read_length == 0 {
+                // 如果读不到了，也认为完成
+                self.upload.transition_to(UploadStatus::Completed)?;
+                return Ok(());
+            }
+
+            match self.upload_chunk(&buffer[..read_length], offset).await {
+                Ok(_) => {
+                    self.upload.progress.update(read_length as u64);
                 }
+                Err(err) => {
+                    retry_count += 1;
 
-                reader.seek(SeekFrom::Start(offset)).await?;
-                let read_length = reader.read(&mut buffer).await?;
-                if read_length == 0 {
-                    // 如果读不到了，也认为完成
-                    self.upload.transition_to(UploadStatus::Completed)?;
-                    return Ok(());
-                }
-
-                match self.upload_chunk(&buffer[..read_length], offset).await {
-                    Ok(_) => {
-                        self.upload.progress.update(read_length as u64);
-                    }
-                    Err(err) => {
-                        retry_count += 1;
-
-                        if retry_count > max_retries {
-                            return Err(err);
-                        }
+                    if retry_count > max_retries {
+                        return Err(err);
                     }
                 }
             }
-
-            Ok(())
-        };
-
-        select! {
-            _ = self.cancellation_token.cancelled() => {},
-            _ = future => {}
         }
-
-        Ok(())
     }
 
     async fn upload_chunk(&mut self, chunk: &[u8], offset: u64) -> UploadResult<()> {
@@ -105,7 +98,7 @@ impl UploadWorker {
             .header(headers::TUS_RESUMABLE, headers::TUS_VERSION)
             .header(headers::UPLOAD_OFFSET, offset.to_string())
             .header(reqwest::header::CONTENT_TYPE, headers::CONTENT_TYPE)
-            .body(chunk)
+            .body(chunk.to_vec())
             .send()
             .await?;
 
@@ -200,12 +193,22 @@ mod tests {
         Upload::new(file_path, 1024 * 1024 * 5).unwrap()
     }
 
-    #[tokio::test]
-    async fn test_create_upload_in_server() {
+    fn create_worker() -> UploadWorker {
         let config = TusConfig::new("http://127.0.0.1:6440/api/file/tus".to_string());
         let token = CancellationToken::new();
-        let mut worker = UploadWorker::new(config, create_upload(), token);
+        UploadWorker::new(config, create_upload(), token)
+    }
+
+    #[tokio::test]
+    async fn test_create_upload_in_server() {
+        let mut worker = create_worker();
         worker.create_upload_in_server().await.unwrap();
         assert!(worker.upload.location.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_upload() {
+        let mut worker = create_worker();
+        let result = worker.start().await.unwrap();
     }
 }
