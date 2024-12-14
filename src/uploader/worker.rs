@@ -1,6 +1,10 @@
+use std::io::SeekFrom;
 use std::str::FromStr;
 use reqwest::{Client, Request, Url};
 use reqwest::header::{HeaderName, HeaderValue};
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader};
+use tokio::select;
 use tokio_util::sync::CancellationToken;
 use crate::core::config::TusConfig;
 use crate::core::error::{UploadError, UploadResult};
@@ -11,11 +15,11 @@ pub struct UploadWorker {
     pub upload: Upload,
     client: Client,
     config: TusConfig,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_token: CancellationToken,
 }
 
 impl UploadWorker {
-    pub fn new(config: TusConfig, upload: Upload, token: Option<CancellationToken>) -> Self {
+    pub fn new(config: TusConfig, upload: Upload, token: CancellationToken) -> Self {
         Self {
             config,
             upload,
@@ -42,13 +46,79 @@ impl UploadWorker {
     }
 
     /// 执行上传
+    /// 参考 Tus 文档：https://tus.io/protocols/resumable-upload#patch
     async fn start_upload_chunks(&mut self) -> UploadResult<()> {
+        let file = File::open(&self.upload.file_path).await?;
+        let mut reader = BufReader::with_capacity(self.config.buffer_size, file);
+        let mut buffer = vec![0u8; self.config.chunk_size];
+
+        let max_retries = self.config.max_retries;
+        let future = async move {
+            let mut retry_count = 0;
+
+            loop {
+                let offset = self.get_upload_offset().await?;
+                if offset >= self.upload.total_bytes {
+                    self.upload.transition_to(UploadStatus::Completed)?;
+                    return Ok(());
+                }
+
+                reader.seek(SeekFrom::Start(offset)).await?;
+                let read_length = reader.read(&mut buffer).await?;
+                if read_length == 0 {
+                    // 如果读不到了，也认为完成
+                    self.upload.transition_to(UploadStatus::Completed)?;
+                    return Ok(());
+                }
+
+                match self.upload_chunk(&buffer[..read_length], offset).await {
+                    Ok(_) => {
+                        self.upload.progress.update(read_length as u64);
+                    }
+                    Err(err) => {
+                        retry_count += 1;
+
+                        if retry_count > max_retries {
+                            return Err(err);
+                        }
+                    }
+                }
+            }
+
+            Ok(())
+        };
+
+        select! {
+            _ = self.cancellation_token.cancelled() => {},
+            _ = future => {}
+        }
+
+        Ok(())
+    }
+
+    async fn upload_chunk(&mut self, chunk: &[u8], offset: u64) -> UploadResult<()> {
+        let url = self.upload.location.as_ref()
+            .ok_or_else(|| UploadError::Config("No upload URL available".into()))?;
+
+        let response = self.client
+            .patch(url)
+            .header(headers::TUS_RESUMABLE, headers::TUS_VERSION)
+            .header(headers::UPLOAD_OFFSET, offset.to_string())
+            .header(reqwest::header::CONTENT_TYPE, headers::CONTENT_TYPE)
+            .body(chunk)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(UploadError::Config(format!("Failed to upload chunk: {}", response.status())));
+        }
+
         Ok(())
     }
 
     async fn build_request(&self) -> UploadResult<Request> {
         let url = Url::parse(&self.config.endpoint)
-            .map_err(|_| UploadError::ConfigError("Invalid endpoint".into()))?;
+            .map_err(|_| UploadError::Config("Invalid endpoint".into()))?;
 
         let mut request = Request::new(reqwest::Method::POST, url);
         let headers = request.headers_mut();
@@ -76,7 +146,7 @@ impl UploadWorker {
         let response = self.client.execute(request).await?;
 
         if !response.status().is_success() {
-            return Err(UploadError::ConfigError(format!(
+            return Err(UploadError::Config(format!(
                 "Task creation failed, please check the configuration; Code: {}",
                 response.status()
             )));
@@ -87,7 +157,7 @@ impl UploadWorker {
             .headers()
             .get(reqwest::header::LOCATION)
             .and_then(|l| l.to_str().ok())
-            .ok_or_else(|| UploadError::ConfigError("No location header in response".to_owned()))?;
+            .ok_or_else(|| UploadError::Config("No location header in response".to_string()))?;
 
         self.upload.set_location(location);
 
@@ -97,14 +167,17 @@ impl UploadWorker {
     /// 获取文件再服务端的偏移
     /// 参考 Tus 协议文档：https://tus.io/protocols/resumable-upload#example
     async fn get_upload_offset(&mut self) ->UploadResult<u64> {
+        let url = self.upload.location.as_ref()
+            .ok_or_else(|| UploadError::Config("No upload URL available".into()))?;
+
         let response = self.client
-            .head(&self.upload.location)
+            .head(url)
             .header(headers::TUS_RESUMABLE, headers::TUS_VERSION)
             .send()
             .await?;
 
         if !response.status().is_success() {
-            return Err(UploadError::ConfigError(format!("Failed to get offset: {}", response.status())));
+            return Err(UploadError::Config(format!("Failed to get offset: {}", response.status())));
         }
 
         let offset = response
@@ -112,7 +185,7 @@ impl UploadWorker {
             .get(headers::UPLOAD_OFFSET)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok())
-            .ok_or_else(|| UploadError::ConfigError("Invalid offset in response".to_owned()))?;
+            .ok_or_else(|| UploadError::Config("Invalid offset in response".to_string()))?;
 
         Ok(offset)
     }
@@ -130,7 +203,8 @@ mod tests {
     #[tokio::test]
     async fn test_create_upload_in_server() {
         let config = TusConfig::new("http://127.0.0.1:6440/api/file/tus".to_string());
-        let mut worker = UploadWorker::new(config, create_upload(), None);
+        let token = CancellationToken::new();
+        let mut worker = UploadWorker::new(config, create_upload(), token);
         worker.create_upload_in_server().await.unwrap();
         assert!(worker.upload.location.is_some());
     }

@@ -9,7 +9,7 @@ pub enum UploadError {
     NetworkError(#[from] reqwest::Error),
 
     #[error("Configuration error: {0}")]
-    ConfigError(String),
+    Config(String),
 
     #[error("Failed to serialize/deserialize: {0}")]
     SerdeError(#[from] serde_json::Error),

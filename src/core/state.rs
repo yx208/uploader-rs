@@ -8,11 +8,11 @@ use crate::core::error::{UploadError, UploadResult};
 use crate::core::upload::Upload;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct UploadStateSnapshot {
+struct UploadStateSnapshot {
     /// 格式变动兼容
     version: u8,
 
-    /// 上传任务映射
+    /// pending 状态任务
     uploads: VecDeque<Upload>,
 
     /// 上传配置

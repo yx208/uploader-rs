@@ -88,7 +88,7 @@ impl Upload {
         let filename = file_path
             .file_name()
             .and_then(|s| s.to_str())
-            .ok_or_else(|| UploadError::ConfigError("Invalid file name".to_string()))?
+            .ok_or_else(|| UploadError::Config("Invalid file name".to_string()))?
             .to_string();
 
         Ok(Self {

@@ -61,31 +61,31 @@ impl TusConfig {
     pub fn validate(&self) -> UploadResult<()> {
         // Validate endpoint
         if self.endpoint.is_empty() {
-            return Err(UploadError::ConfigError("Endpoint URL cannot be empty".into()));
+            return Err(UploadError::Config("Endpoint URL cannot be empty".into()));
         }
         if !self.endpoint.starts_with("http://") && !self.endpoint.starts_with("https://") {
-            return Err(UploadError::ConfigError("Endpoint URL must start with http:// or https://".into()));
+            return Err(UploadError::Config("Endpoint URL must start with http:// or https://".into()));
         }
 
         // Validate concurrent uploads
         if self.max_concurrent == 0 {
-            return Err(UploadError::ConfigError("Max concurrent uploads must be greater than 0".into()));
+            return Err(UploadError::Config("Max concurrent uploads must be greater than 0".into()));
         }
 
         // Validate chunk size
         if self.chunk_size == 0 {
-            return Err(UploadError::ConfigError("Chunk size must be greater than 0".into()));
+            return Err(UploadError::Config("Chunk size must be greater than 0".into()));
         }
         if self.chunk_size > 100 * 1024 * 1024 {
-            return Err(UploadError::ConfigError("Chunk size cannot be larger than 100MB".into()));
+            return Err(UploadError::Config("Chunk size cannot be larger than 100MB".into()));
         }
 
         // Validate buffer size
         if self.buffer_size == 0 {
-            return Err(UploadError::ConfigError("Buffer size must be greater than 0".into()));
+            return Err(UploadError::Config("Buffer size must be greater than 0".into()));
         }
         if self.buffer_size > self.chunk_size {
-            return Err(UploadError::ConfigError("Buffer size cannot be larger than chunk size".into()));
+            return Err(UploadError::Config("Buffer size cannot be larger than chunk size".into()));
         }
 
         Ok(())
