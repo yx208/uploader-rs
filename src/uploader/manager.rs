@@ -143,55 +143,41 @@ mod tests {
     use tokio::{join, select};
     use tokio_util::sync::CancellationToken;
 
-    async fn task1(token: CancellationToken) {
-        let timer = tokio::time::sleep(tokio::time::Duration::from_secs(3));
-
-        let token_clone = token.clone();
-        tokio::spawn(async move {
-            let timer = tokio::time::sleep(tokio::time::Duration::from_secs(1));
-            token_clone.cancel();
-        });
-
-        select! {
-            r = timer => {
-                println!("timer expired");
-            }
-            r = token.cancelled() => {
-                println!("cancelled");
-            }
-        };
+    fn test_file1() -> PathBuf {
+        let mut file_path = dirs::video_dir().unwrap();
+        file_path.push("1086599689-1-208.mp4");
+        file_path
     }
 
-    async fn task2(token: CancellationToken) {
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    fn test_file2() -> PathBuf {
+        let mut file_path = dirs::video_dir().unwrap();
+        file_path.push("1086599689-1-209.mp4");
+        file_path
+    }
+
+    fn test_file3() -> PathBuf {
+        let mut file_path = dirs::video_dir().unwrap();
+        file_path.push("1086599689-1-210.mp4");
+        file_path
+    }
+
+    async fn create_manager() -> UploadManager {
+        let config = TusConfig::new("http://127.0.0.1:6440/api/file/tus".to_string());
+        UploadManager::new(config).await.unwrap()
     }
 
     #[tokio::test]
-    async fn test_select() {
-        // let f1 = task1();
-        // let f2 = task2();
+    async fn test_concurrent_uploads() {
+        let manager = Arc::new(create_manager().await);
 
-        let token = CancellationToken::new();
-
-        let child_token = token.child_token();
+        let manager_clone = manager.clone();
         tokio::spawn(async move {
-            task1(child_token).await;
+            manager_clone.run().await;
         });
 
-        let handle = tokio::spawn(async move {
-            select! {
-                r = token.cancelled() => {
-                    println!("parent cancelled");
-                }
-                r = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
-                    println!("done");
-                }
-            }
-        });
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-        join!(handle);
+        manager.add_upload(test_file1()).await.unwrap();
+        manager.add_upload(test_file2()).await.unwrap();
+        manager.add_upload(test_file3()).await.unwrap();
     }
 
     #[tokio::test]
